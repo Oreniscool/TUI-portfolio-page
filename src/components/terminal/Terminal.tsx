@@ -13,13 +13,15 @@ import {
 import { useSoundEffect } from '../../hooks/useSoundEffect';
 import TerminalLine from './TerminalLine';
 import PromptInput from './PromptInput';
+import SuggestionChips from './SuggestionChips';
 import type { ThemeId } from '../../types';
 
 interface TerminalProps {
   onExecuteCommandRef?: (fn: (cmd: string) => void) => void;
+  onOpenPalette?: () => void;
 }
 
-const Terminal: React.FC<TerminalProps> = ({ onExecuteCommandRef }) => {
+const Terminal: React.FC<TerminalProps> = ({ onExecuteCommandRef, onOpenPalette }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const lines = useTerminalStore((s) => s.lines);
@@ -112,6 +114,9 @@ const Terminal: React.FC<TerminalProps> = ({ onExecuteCommandRef }) => {
     }
   }, [submitInput, runCommandDirect]);
 
+  // Count of user-executed commands (history items beyond the initial 'fastfetch')
+  const commandCount = history.length;
+
   return (
     <div
       ref={scrollRef}
@@ -153,6 +158,13 @@ const Terminal: React.FC<TerminalProps> = ({ onExecuteCommandRef }) => {
           <span className="text-xs">Fetching live stats...</span>
         </div>
       )}
+
+      {/* ─── Contextual Suggestion Chips ──────────────────────────── */}
+      <SuggestionChips
+        onRunCommand={runCommandDirect}
+        onOpenPalette={onOpenPalette || (() => {})}
+        commandCount={commandCount}
+      />
 
       {/* Active prompt line */}
       <PromptInput

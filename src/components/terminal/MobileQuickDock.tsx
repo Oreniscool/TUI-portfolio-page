@@ -35,15 +35,18 @@ const MobileQuickDock: React.FC<MobileQuickDockProps> = ({ onRunCommand }) => {
   return (
     <nav
       aria-label="Quick Command Dock"
-      className="shrink-0 flex items-center gap-2 px-4 py-2 overflow-x-auto border-t select-none z-20 shadow-xl backdrop-blur-xl"
+      className="shrink-0 flex items-center gap-2 px-4 py-2 overflow-x-auto border-t select-none z-20 shadow-xl backdrop-blur-md"
       style={{
-        backgroundColor: 'rgba(0, 0, 0, 0.85)',
-        borderColor: 'rgba(0, 240, 255, 0.25)',
+        backgroundColor: 'rgba(5, 8, 20, 0.45)',
+        borderColor: `${palette.accent}24`,
         color: palette.fg,
         scrollbarWidth: 'none',
       }}
     >
-      <span className="text-xs font-bold shrink-0 tracking-wider text-cyan-400 pl-1 font-mono-term">
+      <span
+        className="text-xs font-bold shrink-0 tracking-wider pl-1 font-mono-term"
+        style={{ color: palette.accent }}
+      >
         COMMANDS:
       </span>
 
@@ -54,16 +57,24 @@ const MobileQuickDock: React.FC<MobileQuickDockProps> = ({ onRunCommand }) => {
             <button
               key={action.cmd}
               onClick={() => onRunCommand(action.cmd)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs md:text-sm font-semibold shrink-0 cursor-pointer transition-all hover:scale-105 active:scale-95 border shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs md:text-sm font-semibold shrink-0 cursor-pointer transition-all hover:scale-105 active:scale-95 border shadow-sm backdrop-blur-sm"
               style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                borderColor: 'rgba(255, 255, 255, 0.1)',
+                backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                borderColor: 'rgba(255, 255, 255, 0.08)',
                 color: palette.fg,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = `${action.color}1f`;
+                e.currentTarget.style.borderColor = `${action.color}66`;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.04)';
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)';
               }}
               title={`Execute '${action.cmd}'`}
             >
-              {action.emoji && <span className="text-xs">{action.emoji}</span>}
-              {Icon && <Icon size={16} style={{ color: action.color }} />}
+              {action.emoji && <span>{action.emoji}</span>}
+              {Icon && <Icon size={14} style={{ color: action.color }} />}
               <span>{action.label}</span>
             </button>
           );

@@ -1,14 +1,24 @@
 import { create } from 'zustand';
-import type { TerminalLine } from '../types';
-import { generateFastfetchLines } from '../core/registry/commandRegistry';
+import type { OutputItem, TerminalLine } from '../types';
+import { generateWelcomeLines } from '../core/registry/commandRegistry';
 
 let lineIdCounter = 0;
-function nextLineId(): string {
-  return `line-${++lineIdCounter}-${Date.now()}`;
+const nextLineId = () => `line-${++lineIdCounter}`;
+
+// Scrollback cap: older lines are dropped so long sessions stay fast.
+const MAX_LINES = 1000;
+
+function toLines(type: TerminalLine['type'], items: OutputItem[]): TerminalLine[] {
+  return items.map((item) =>
+    typeof item === 'string'
+      ? { id: nextLineId(), type, content: item, timestamp: Date.now() }
+      : { id: nextLineId(), type, content: '', block: item, timestamp: Date.now() }
+  );
 }
 
 interface TerminalState {
   lines: TerminalLine[];
+  /** Newest first. Includes clicked commands as well as typed ones. */
   history: string[];
   historyIndex: number;
   currentInput: string;
@@ -16,86 +26,44 @@ interface TerminalState {
   isProcessing: boolean;
   startTime: number;
 
-  // Actions
-  addLine: (type: TerminalLine['type'], content: string) => void;
-  addLines: (type: TerminalLine['type'], contents: string[]) => void;
+  addLines: (type: TerminalLine['type'], items: OutputItem[]) => string | undefined;
   setInput: (input: string) => void;
-  submitInput: () => string;
+  takeInput: () => string;
+  pushHistory: (command: string) => void;
   clearLines: () => void;
   setPath: (path: string) => void;
   setProcessing: (state: boolean) => void;
   navigateHistory: (direction: 'up' | 'down') => void;
 }
 
-const INITIAL_LINES: TerminalLine[] = [
-  {
-    id: nextLineId(),
-    type: 'system' as const,
-    content: ':: Interactive TUI Portfolio v1.0.0 — Session initialized for guest',
-    timestamp: Date.now(),
-  },
-  {
-    id: nextLineId(),
-    type: 'input' as const,
-    content: '\x1b[1;32mqitiya\x1b[0m@\x1b[1;36mzenith-station\x1b[0m:\x1b[1;34m~\x1b[0m$ fastfetch',
-    timestamp: Date.now(),
-  },
-  ...generateFastfetchLines().map((content) => ({
-    id: nextLineId(),
-    type: 'output' as const,
-    content,
-    timestamp: Date.now(),
-  })),
-];
-
 export const useTerminalStore = create<TerminalState>((set, get) => ({
-  lines: INITIAL_LINES,
-  history: ['fastfetch'],
+  lines: toLines('output', generateWelcomeLines()),
+  history: [],
   historyIndex: -1,
   currentInput: '',
   currentPath: '~',
   isProcessing: false,
   startTime: Date.now(),
 
-  addLine: (type, content) =>
-    set((state) => ({
-      lines: [
-        ...state.lines,
-        { id: nextLineId(), type, content, timestamp: Date.now() },
-      ],
-    })),
-
-  addLines: (type, contents) =>
-    set((state) => ({
-      lines: [
-        ...state.lines,
-        ...contents.map((content) => ({
-          id: nextLineId(),
-          type,
-          content,
-          timestamp: Date.now(),
-        })),
-      ],
-    })),
+  addLines: (type, items) => {
+    const added = toLines(type, items);
+    set((state) => ({ lines: [...state.lines, ...added].slice(-MAX_LINES) }));
+    return added[0]?.id;
+  },
 
   setInput: (input) => set({ currentInput: input, historyIndex: -1 }),
 
-  submitInput: () => {
-    const { currentInput, history } = get();
-    const trimmed = currentInput.trim();
-
-    if (trimmed) {
-      set({
-        history: [trimmed, ...history].slice(0, 200),
-        historyIndex: -1,
-        currentInput: '',
-      });
-    } else {
-      set({ currentInput: '' });
-    }
-
-    return trimmed;
+  takeInput: () => {
+    const value = get().currentInput.trim();
+    set({ currentInput: '', historyIndex: -1 });
+    return value;
   },
+
+  pushHistory: (command) =>
+    set((state) => ({
+      history: state.history[0] === command ? state.history : [command, ...state.history].slice(0, 200),
+      historyIndex: -1,
+    })),
 
   clearLines: () => set({ lines: [] }),
 
@@ -106,17 +74,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   navigateHistory: (direction) => {
     const { history, historyIndex } = get();
     if (history.length === 0) return;
-
-    let newIndex: number;
-    if (direction === 'up') {
-      newIndex = Math.min(historyIndex + 1, history.length - 1);
-    } else {
-      newIndex = Math.max(historyIndex - 1, -1);
-    }
-
-    set({
-      historyIndex: newIndex,
-      currentInput: newIndex === -1 ? '' : history[newIndex],
-    });
+    const newIndex =
+      direction === 'up' ? Math.min(historyIndex + 1, history.length - 1) : Math.max(historyIndex - 1, -1);
+    set({ historyIndex: newIndex, currentInput: newIndex === -1 ? '' : history[newIndex] });
   },
 }));

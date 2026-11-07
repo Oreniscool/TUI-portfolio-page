@@ -1,51 +1,71 @@
 // ─── Terminal Types ───────────────────────────────────────────────────────────
 
+/**
+ * Rich output that renders as a component instead of an ANSI text line.
+ * Plain strings in a command's output are still treated as ANSI text lines.
+ */
+export type OutputBlock =
+  | { kind: 'heading'; text: string }
+  | { kind: 'commands'; label?: string; commands: string[] }
+  | { kind: 'projects'; title: string; items: ProjectItem[] }
+  | { kind: 'project'; project: ProjectItem };
+
+export type OutputItem = string | OutputBlock;
+
 export interface TerminalLine {
   id: string;
-  type: 'input' | 'output' | 'error' | 'system' | 'ascii';
+  type: 'input' | 'output' | 'error' | 'system';
   content: string;
+  block?: OutputBlock;
   timestamp: number;
-  prompt?: string;
 }
 
 export interface CommandResult {
-  output: string[];
+  output: OutputItem[];
   isError?: boolean;
-  isRaw?: boolean; // Skip line-by-line wrapping; render as single block
 }
 
 // ─── Theme Types ─────────────────────────────────────────────────────────────
 
 export type ThemeId =
-  | 'amoled-dark'
+  | 'blueprint'
+  | 'whiteprint'
   | 'tokyo-night'
   | 'catppuccin-mocha'
   | 'gruvbox-dark'
   | 'nord'
-  | 'arch-cyan'
   | 'matrix-green'
   | 'dracula'
   | 'cyberpunk'
   | 'monokai-pro';
 
-export interface ThemePalette {
+/** The design tokens every theme fills. See src/index.css for how they're used. */
+export interface ThemeTokens {
   id: ThemeId;
   name: string;
-  bg: string;
-  bgSecondary: string;
-  fg: string;
-  fgMuted: string;
+  scheme: 'dark' | 'light';
+  /** Page background. */
+  sheet: string;
+  /** Window surface. */
+  panel: string;
+  /** Main text. */
+  chalk: string;
+  /** Secondary text: hints, timestamps, labels. */
+  pencil: string;
+  /** Actions and focus only: fills, borders, bars. Never body text. */
   accent: string;
-  accentSecondary: string;
-  red: string;
-  green: string;
-  yellow: string;
-  blue: string;
-  magenta: string;
-  cyan: string;
-  border: string;
-  selection: string;
-  cursor: string;
+  /** Text placed on an accent fill. */
+  accentInk: string;
+  /** Links and live data. */
+  sky: string;
+  /** Errors. */
+  rose: string;
+  /** Success and "active". */
+  mint: string;
+  /** Window borders and dividers (decorative). */
+  rule: string;
+  /** Background grid lines (decorative). */
+  grid: string;
 }
 
 // ─── Audio Types ─────────────────────────────────────────────────────────────
@@ -79,6 +99,8 @@ export interface ProfileBio {
   fullBio: string[];
   avatarUrl: string;
   avatarAscii?: string;
+  /** Link to a CV/resume (e.g. '/cv.pdf' in public/). The CV button and command show only when set. */
+  cvUrl?: string;
   socials: {
     github: string;
     linkedin: string;
@@ -147,13 +169,18 @@ export interface GitHubCommitItem {
   author: string;
 }
 
-export interface GitHubActivityStats {
+export interface GitHubPushItem {
+  repo: string;
+  branch: string;
+  date: string;
+  url: string;
+}
+
+export interface GitHubActivity {
   username: string;
-  totalCommitsPastYear: number;
-  currentStreakDays: number;
-  longestStreakDays: number;
-  recentCommits: GitHubCommitItem[];
-  weeklyContributionGrid: number[][]; // 7 days x 12 weeks activity matrix (0-4 density)
+  publicRepos: number | null;
+  pushes: GitHubPushItem[];
+  fetchedAt: number;
 }
 
 export interface LeetCodeStats {
@@ -180,7 +207,8 @@ export interface LastFmTrack {
   url: string;
   image?: string;
   nowPlaying: boolean;
-  playedAt?: string;
+  /** Epoch ms; absent while the track is playing. */
+  playedAtMs?: number;
 }
 
 export interface LastFmStatus {

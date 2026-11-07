@@ -1,154 +1,91 @@
-import React, { useRef, useEffect, useCallback, useMemo } from 'react';
-import type { ThemePalette } from '../../types';
-import { getAllAliases } from '../../core/registry/commandRegistry';
+import React, { useMemo } from 'react';
+import { getCompletions } from '../../core/registry/commandRegistry';
 import { useSoundEffect } from '../../hooks/useSoundEffect';
 
 interface PromptInputProps {
-  palette: ThemePalette;
+  inputRef: React.RefObject<HTMLInputElement | null>;
   currentPath: string;
-  currentInput: string;
-  isProcessing: boolean;
-  onInputChange: (value: string) => void;
+  value: string;
+  onChange: (value: string) => void;
   onSubmit: () => void;
   onHistoryNav: (direction: 'up' | 'down') => void;
+  onClear: () => void;
 }
 
-const PromptInput: React.FC<PromptInputProps> = ({
-  palette,
-  currentPath,
-  currentInput,
-  isProcessing,
-  onInputChange,
-  onSubmit,
-  onHistoryNav,
-}) => {
-  const inputRef = useRef<HTMLInputElement>(null);
+const PromptInput: React.FC<PromptInputProps> = ({ inputRef, currentPath, value, onChange, onSubmit, onHistoryNav, onClear }) => {
   const { playKeySound } = useSoundEffect();
 
-  // Auto-focus on mount and state changes
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, [isProcessing]);
-
-  // Refocus on click anywhere
-  const handleContainerClick = useCallback(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    document.addEventListener('click', handleContainerClick);
-    return () => document.removeEventListener('click', handleContainerClick);
-  }, [handleContainerClick]);
-
-  // Inline Ghost Suggestion
-  const ghostSuggestion = useMemo(() => {
-    const trimmed = currentInput.toLowerCase().trim();
-    if (!trimmed) return '';
-    const aliases = getAllAliases();
-    const match = aliases.find((a) => a.startsWith(trimmed) && a !== trimmed);
-    return match ? match.slice(trimmed.length) : '';
-  }, [currentInput]);
+  // Inline completion for the first word only.
+  const ghost = useMemo(() => {
+    const typed = value.toLowerCase();
+    if (!typed.trim() || typed.includes(' ')) return '';
+    const match = getCompletions().find((c) => c.startsWith(typed) && c !== typed);
+    return match ? match.slice(typed.length) : '';
+  }, [value]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       playKeySound('enter');
       onSubmit();
-    } else if (e.key === ' ' || e.code === 'Space') {
-      playKeySound('space');
-    } else if (e.key === 'Backspace') {
-      playKeySound('backspace');
-    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      playKeySound('normal');
+      return;
     }
-
-    if (e.key === 'ArrowUp') {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();
-      onHistoryNav('up');
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      onHistoryNav('down');
-    } else if (e.key === 'Tab' || (e.key === 'ArrowRight' && ghostSuggestion && inputRef.current?.selectionStart === currentInput.length)) {
-      e.preventDefault();
-      if (ghostSuggestion) {
-        onInputChange(currentInput + ghostSuggestion + ' ');
-      } else {
-        const trimmed = currentInput.toLowerCase().trim();
-        if (trimmed) {
-          const match = getAllAliases().find((a) => a.startsWith(trimmed));
-          if (match) {
-            onInputChange(match + ' ');
-          }
-        }
-      }
-    } else if (e.key === 'l' && e.ctrlKey) {
-      e.preventDefault();
-      onInputChange('clear');
-      setTimeout(onSubmit, 0);
+      onHistoryNav(e.key === 'ArrowUp' ? 'up' : 'down');
+      return;
     }
+    const atEnd = inputRef.current?.selectionStart === value.length;
+    // Tab completes only when there is something to complete; otherwise it moves
+    // focus as usual, so keyboard users are never trapped in the prompt.
+    if ((e.key === 'Tab' && !e.shiftKey && ghost) || (e.key === 'ArrowRight' && ghost && atEnd)) {
+      e.preventDefault();
+      onChange(value + ghost + ' ');
+      return;
+    }
+    if (e.key === 'l' && e.ctrlKey) {
+      e.preventDefault();
+      onClear();
+      return;
+    }
+    if (e.key === 'Backspace') playKeySound('backspace');
+    else if (e.key === ' ') playKeySound('space');
+    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) playKeySound('normal');
   };
 
   return (
-    <div className="flex items-center px-4 py-1 gap-0 relative" style={{ color: palette.fg }}>
-      {/* Prompt prefix */}
-      <span className="shrink-0 select-none font-bold" style={{ color: palette.green }}>
-        qitiya
-      </span>
-      <span className="shrink-0 select-none text-gray-500">
-        @
-      </span>
-      <span className="shrink-0 select-none font-bold" style={{ color: palette.cyan }}>
-        zenith-station
-      </span>
-      <span className="shrink-0 select-none text-gray-500">
-        :
-      </span>
-      <span className="shrink-0 select-none font-bold" style={{ color: palette.blue }}>
-        {currentPath}
-      </span>
-      <span className="shrink-0 select-none font-bold" style={{ color: palette.accent }}>
-        $&nbsp;
-      </span>
-
-      {/* Input container with ghost text overlay */}
-      <div className="flex-1 relative flex items-center">
+    <div className="mt-3 flex items-baseline gap-2">
+      <label htmlFor="prompt" className="shrink-0 text-pencil">
+        <span className="sr-only">Command, in folder </span>
+        {currentPath} <span aria-hidden="true">›</span>
+      </label>
+      <div className="relative min-w-0 flex-1">
         <input
+          id="prompt"
           ref={inputRef}
           type="text"
-          value={currentInput}
-          onChange={(e) => onInputChange(e.target.value)}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={isProcessing}
-          className="w-full bg-transparent outline-none border-none caret-current relative z-10"
-          style={{
-            color: palette.fg,
-            caretColor: palette.cursor,
-            fontFamily: 'inherit',
-            fontSize: 'inherit',
-          }}
+          className="relative z-10 w-full bg-transparent text-chalk caret-accent outline-none"
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
+          enterKeyHint="go"
+          aria-describedby={ghost ? 'prompt-hint' : undefined}
         />
-        {/* Ghost autocompletion text */}
-        {ghostSuggestion && (
-          <div
-            className="absolute left-0 top-0 pointer-events-none select-none whitespace-pre"
-            style={{
-              color: palette.fgMuted,
-              opacity: 0.5,
-              fontFamily: 'inherit',
-              fontSize: 'inherit',
-              lineHeight: 'inherit',
-            }}
-          >
-            <span style={{ visibility: 'hidden' }}>{currentInput}</span>
-            <span>{ghostSuggestion}</span>
-            <span className="text-[10px] ml-2 px-1 rounded border opacity-60" style={{ borderColor: palette.border }}>
-              [Tab]
-            </span>
+        {ghost && (
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0 whitespace-pre text-pencil">
+            <span className="invisible">{value}</span>
+            {ghost}
+            <kbd className="ml-2 rounded border border-b-2 border-rule px-1 text-[13px]">Tab</kbd>
           </div>
+        )}
+        {ghost && (
+          <span id="prompt-hint" className="sr-only">
+            Press Tab to complete {value + ghost}
+          </span>
         )}
       </div>
     </div>

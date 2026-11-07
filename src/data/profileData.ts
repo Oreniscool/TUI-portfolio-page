@@ -16,8 +16,8 @@ export const systemInfo: SystemInfo = {
   gpu: 'NVIDIA GeForce RTX 4080 (16GB VRAM, CUDA 12.4)',
   memory: '32GiB DDR5-6000 MT/s',
   disk: '2TB NVMe PCIe 4.0 (Btrfs / zstd)',
-  location: 'Mumbai, India 🇮🇳',
-  status: 'Available for Opportunities 🚀',
+  location: 'Mumbai, India',
+  status: 'Open to opportunities',
 };
 
 // ─── Oren Coelho Profile Bio ─────────────────────────────────────────────────
@@ -25,7 +25,7 @@ export const systemInfo: SystemInfo = {
 export const profileBio: ProfileBio = {
   fullName: 'Oren Coelho',
   tagline: 'Full-Stack Developer • AI & Systems Enthusiast • Open Source Contributor',
-  shortBio: 'Full-stack software engineer building fast web platforms, AI/ML tools, and systems software in TypeScript, React, Python, and C/C++.',
+  shortBio: 'Builds fast web platforms, AI/ML tools and systems software in TypeScript, React, Python and C/C++.',
   fullBio: [
     'I\'m Oren Coelho (alias qitiya), a passionate software developer based in Mumbai, India.',
     'I build modern, high-performance web applications with React, Next.js, TypeScript, and Node.js.',
@@ -33,6 +33,8 @@ export const profileBio: ProfileBio = {
     'I love crafting clean user experiences with strong engineering fundamentals.',
   ],
   avatarUrl: 'https://avatars.githubusercontent.com/u/87889645?v=4',
+  // Add your CV to public/ (e.g. public/cv.pdf) and set this to '/cv.pdf' to show the Download CV button.
+  cvUrl: undefined,
   socials: {
     github: 'https://github.com/Oreniscool',
     linkedin: 'https://www.linkedin.com/in/oren-coelho-8687b7272/',
@@ -320,60 +322,10 @@ export const awards: AwardItem[] = [
   },
 ];
 
-// ─── Oren ASCII Logos ─────────────────────────────────────────────────────────
+// ─── Account usernames for live widgets ─────────────────────────────────────
 
-export const OREN_ASCII_LOGO = [
-  '  ██████╗  ██████╗  ███████╗ ███╗   ██╗',
-  ' ██╔═══██╗ ██╔══██╗ ██╔════╝ ████╗  ██║',
-  ' ██║   ██║ ██████╔╝ █████╗   ██╔██╗ ██║',
-  ' ██║   ██║ ██╔══██╗ ██╔══╝   ██║╚██╗██║',
-  ' ╚██████╔╝ ██║  ██║ ███████╗ ██║ ╚████║',
-  '  ╚═════╝  ╚═╝  ╚═╝ ╚══════╝ ╚═╝  ╚═══╝',
-  ' +------------------------------------+',
-  ' |        OREN COELHO (@qitiya)       |',
-  ' |    Agentic AI & DevOps Engineer    |',
-  ' +------------------------------------+',
-  '   ^   ^   ^   ^   ^   ^   ^   ^   ^   ',
-  '  [+] [*] [+] [*] [+] [*] [+] [*] [+]  ',
-  ' ====== zenith-station :: tty01 ======',
-  '  :: k8s :: docker :: terraform :: ci ',
-  '  :: langgraph :: mcp :: agents :: llm',
-  '  :: archlinux :: hyprland :: wayland ',
-];
-
-export const OREN_FULL_ASCII_LOGO = [
-  '  ██████╗ ██████╗ ███████╗███╗   ██╗',
-  ' ██╔═══██╗██╔══██╗██╔════╝████╗  ██║',
-  ' ██║   ██║██████╔╝█████╗  ██╔██╗ ██║',
-  ' ██║   ██║██╔══██╗██╔══╝  ██║╚██╗██║',
-  ' ╚██████╔╝██║  ██║███████╗██║ ╚████║',
-  '  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝',
-  '  ██████╗ ██████╗ ███████╗██╗     ██╗  ██╗ ██████╗ ',
-  ' ██╔════╝██╔═══██╗██╔════╝██║     ██║  ██║██╔═══██╗',
-  ' ██║     ██║   ██║█████╗  ██║     ███████║██║   ██║',
-  ' ██║     ██║   ██║██╔══╝  ██║     ██╔══██║██║   ██║',
-  ' ╚██████╗╚██████╔╝███████╗███████╗██║  ██║╚██████╔╝',
-  '  ╚═════╝ ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ',
-];
-
-export const ARCH_LOGO = [
-  '                   -`                 ',
-  '                  .o+`                ',
-  '                 `ooo/                ',
-  '                `+oooo:               ',
-  '               `+oooooo:              ',
-  '               -+oooooo+:             ',
-  '             `/:-:++oooo+:            ',
-  '            `/++++/+++++++:           ',
-  '           `/++++++++++++++:          ',
-  '          `/+++ooooooooooooo/`        ',
-  '         ./ooosssso++osssssso+`       ',
-  '        .oossssso-````/ossssss+`      ',
-  '       -osssssso.      :ssssssso.     ',
-  '      :osssssss/        osssso+++.    ',
-  '     /ossssssss/        +ssssooo/-    ',
-  '   `/ossssso+/:-        -:/+osssso+-  ',
-  '  `+sso+:-`                 `.-/+oso: ',
-  ' `++:.                           `-/+/',
-  ' .`                                 `/',
-];
+export const usernames = {
+  github: 'Oreniscool',
+  leetcode: 'Oreniscool',
+  lastfm: 'Qitiya',
+};

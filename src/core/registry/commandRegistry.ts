@@ -1,575 +1,356 @@
-import type { CommandHandler, ParsedCommand, CommandResult } from '../../types';
-import { systemInfo, profileBio, projects, awards, OREN_ASCII_LOGO } from '../../data/profileData';
-import { themes } from '../../styles/themes';
-import type { ThemeId } from '../../types';
-import { githubActivityService } from '../../services/api/githubActivityService';
-import { leetCodeService } from '../../services/api/leetcodeService';
-import { lastFmService } from '../../services/api/lastfmService';
+import type { CommandHandler, ParsedCommand, CommandResult, OutputItem, ThemeId, ProjectItem } from '../../types';
+import { systemInfo, profileBio, projects, awards, usernames } from '../../data/profileData';
+import { themes, themeIds } from '../../styles/themes';
+import { getGitHubActivity } from '../../services/api/githubActivityService';
+import { getLeetCodeStats } from '../../services/api/leetcodeService';
+import { getRecentTracks } from '../../services/api/lastfmService';
+import { timeAgo } from '../../services/api/cache';
 import { virtualFileSystem } from '../vfs/virtualFileSystem';
 
-// ─── Fastfetch / Authentic Arch Linux System Banner ──────────────────────────
+// ─── ANSI helpers ────────────────────────────────────────────────────────────
+// TerminalLine maps these codes onto theme tokens: 1 bold, 2 pencil (muted),
+// 31 rose, 32 mint, 36 sky. "[command]" renders as a clickable command link.
 
-export function generateFastfetchLines(): string[] {
-  const info = systemInfo;
-  const bio = profileBio;
-  const logo = OREN_ASCII_LOGO;
+const RESET = '\x1b[0m';
+const bold = (s: string) => `\x1b[1m${s}${RESET}`;
+const muted = (s: string) => `\x1b[2m${s}${RESET}`;
+const mint = (s: string) => `\x1b[32m${s}${RESET}`;
+const rose = (s: string) => `\x1b[31m${s}${RESET}`;
+const sky = (s: string) => `\x1b[36m${s}${RESET}`;
+const cmd = (c: string) => `[${c}]`;
+const heading = (text: string): OutputItem => ({ kind: 'heading', text });
 
-  const infoLines = [
-    `\x1b[1;32m${info.username}\x1b[0m@\x1b[1;36m${info.hostname}\x1b[0m`,
-    `\x1b[2m--------------------------------------------------\x1b[0m`,
-    `\x1b[1;36mName:\x1b[0m          \x1b[1m${bio.fullName}\x1b[0m \x1b[1;33m(@${info.username})\x1b[0m`,
-    `\x1b[1;36mRole:\x1b[0m          ${bio.tagline}`,
-    `\x1b[1;36mFocus:\x1b[0m         Agentic AI Workflows & Distributed Systems`,
-    `\x1b[1;36mAgentic AI:\x1b[0m    LangGraph, MCP Tooling, Multi-Agent Swarms`,
-    `\x1b[1;36mLanguages:\x1b[0m     TypeScript, Rust, Python, Go, Solidity, SQL`,
-    `\x1b[1;36mDevOps:\x1b[0m        Docker, Kubernetes, GitHub Actions, Terraform`,
-    `\x1b[1;36mDatabases:\x1b[0m     PostgreSQL, Redis, MongoDB, Qdrant Vector DB`,
-    `\x1b[1;36mAchievements:\x1b[0m  5x Hackathon Champion & Case Study Winner`,
-    `\x1b[1;36mAlgorithms:\x1b[0m    LeetCode Active Solver (Graph, DP, Greedy)`,
-    `\x1b[1;36mLocation:\x1b[0m      ${info.location}`,
-    `\x1b[1;36mStatus:\x1b[0m        \x1b[1;32m${info.status}\x1b[0m`,
-    `\x1b[1;36mEmail:\x1b[0m         ${bio.socials.email}`,
-    `\x1b[1;36mGitHub:\x1b[0m        ${bio.socials.github}`,
-    `\x1b[1;36mLinkedIn:\x1b[0m      ${bio.socials.linkedin}`,
-    '',
-    `\x1b[40m   \x1b[41m   \x1b[42m   \x1b[43m   \x1b[44m   \x1b[45m   \x1b[46m   \x1b[47m   \x1b[0m`,
-  ];
+const error = (...lines: string[]): CommandResult => ({ output: lines.map((l) => rose(l)), isError: true });
 
-  const maxLogoWidth = 39;
-  const maxLines = Math.max(logo.length, infoLines.length);
-  const output: string[] = [''];
+// ─── Hooks into the terminal UI ──────────────────────────────────────────────
 
-  for (let i = 0; i < maxLines; i++) {
-    const logoLine = i < logo.length ? logo[i] : ' '.repeat(maxLogoWidth);
-    const infoLine = i < infoLines.length ? infoLines[i] : '';
-    output.push(`\x1b[1;36m${logoLine.padEnd(maxLogoWidth)}\x1b[0m   ${infoLine}`);
-  }
-
-  output.push('');
-  output.push('  \x1b[1;33m⚡ QUICK ACCESS:\x1b[0m  Click or type:  [projects]  [awards]  [commits]  [leetcode]  [music]  [skills]  [whoami]  [contact]  [help]');
-  output.push('');
-
-  return output;
+export interface CommandContext {
+  setTheme: (id: ThemeId | null) => void;
+  clear: () => void;
+  getHistory: () => string[];
+  setPath: (path: string) => void;
+  togglePhosphor: () => boolean;
+  toggleSound: () => boolean;
+  sessionStart: number;
 }
+
+let ctx: CommandContext | null = null;
+export function setCommandContext(next: CommandContext) {
+  ctx = next;
+}
+
+// ─── Shared content ──────────────────────────────────────────────────────────
+
+const winCount = awards.filter((a) => !/runner/i.test(a.position)).length;
+const runnerUpCount = awards.length - winCount;
+const awardsSummary = `${winCount} wins${runnerUpCount ? ` and ${runnerUpCount} runner-up` : ''}`;
+
+const statusLabel: Record<ProjectItem['status'], string> = {
+  active: 'Active',
+  completed: 'Completed',
+  wip: 'In progress',
+  archived: 'Archived',
+};
+
+export const STARTER_COMMANDS = ['projects', 'awards', 'skills', 'activity', 'contact', 'help'];
+
+export function generateWelcomeLines(): OutputItem[] {
+  return [
+    muted('Welcome. This is a working terminal: click a command or type one. Tab completes.'),
+    { kind: 'commands', commands: STARTER_COMMANDS },
+    '',
+  ];
+}
+
+// ─── Profile ─────────────────────────────────────────────────────────────────
 
 const fastfetchCommand: CommandHandler = {
   name: 'fastfetch',
   aliases: ['fastfetch', 'neofetch', 'fetch', 'sysinfo'],
-  description: 'Display authentic Arch Linux system overview & developer specs',
+  description: 'Profile summary',
   usage: 'fastfetch',
-  execute: () => ({
-    output: generateFastfetchLines(),
-  }),
+  execute: () => {
+    const row = (label: string, value: string) => `  ${sky(label.padEnd(13))}${value}`;
+    return {
+      output: [
+        heading(`${systemInfo.username}@${systemInfo.hostname}`),
+        row('Name', profileBio.fullName),
+        row('Role', profileBio.tagline),
+        row('Focus', 'Agentic AI workflows and distributed systems'),
+        row('Languages', 'TypeScript, Python, C/C++, Java, Solidity, SQL'),
+        row('Awards', awardsSummary),
+        row('Location', systemInfo.location),
+        row('Status', mint(systemInfo.status)),
+        row('Machine', `${systemInfo.osName}, ${systemInfo.wm}`),
+        '',
+        { kind: 'commands', commands: STARTER_COMMANDS },
+      ],
+    };
+  },
 };
-
-// ─── Help Command ────────────────────────────────────────────────────────────
-
-const helpCommand: CommandHandler = {
-  name: 'help',
-  aliases: ['help', 'man', '?', 'commands'],
-  description: 'Show available commands',
-  usage: 'help [command]',
-  execute: () => ({
-    output: [
-      '\x1b[1;36m╭─── Available Commands ───────────────────────────────────────────────────╮\x1b[0m',
-      '\x1b[1;36m│\x1b[0m',
-      '\x1b[1;36m│\x1b[0m  \x1b[1;33m📋 PROFILE & DEVELOPER STATS\x1b[0m',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mfastfetch\x1b[0m       System overview & developer banner',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mwhoami\x1b[0m          About Oren Coelho (@qitiya) / full background',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mawards\x1b[0m          Hackathon championships & case study wins',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mskills\x1b[0m          Technical stack & visual proficiency levels',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mcommits\x1b[0m         Live GitHub commit feed & 12-week activity heatmap',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mleetcode\x1b[0m        Live LeetCode problem-solving stats widget',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mlastfm\x1b[0m          Live Last.fm Now Playing & recent music scrobbles',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mcontact\x1b[0m         LinkedIn, GitHub, LeetCode, and direct email',
-      '\x1b[1;36m│\x1b[0m',
-      '\x1b[1;36m│\x1b[0m  \x1b[1;33m🚀 CURATED PROJECTS\x1b[0m',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mprojects\x1b[0m        List all curated impactful projects',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mproject <name>\x1b[0m  Deep breakdown of a project (e.g. project aegis)',
-      '\x1b[1;36m│\x1b[0m',
-      '\x1b[1;36m│\x1b[0m  \x1b[1;33m📁 VIRTUAL FILE SYSTEM\x1b[0m',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mls\x1b[0m              List files & directories',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mcd <dir>\x1b[0m        Change directory (e.g. cd projects)',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mpwd\x1b[0m             Print current directory',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mcat <file>\x1b[0m      Read file contents (e.g. cat about.md)',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mtree\x1b[0m            Render visual directory tree structure',
-      '\x1b[1;36m│\x1b[0m',
-      '\x1b[1;36m│\x1b[0m  \x1b[1;33m⚙️  SYSTEM & THEMES\x1b[0m',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mtheme\x1b[0m           Switch themes (AMOLED Dark, Tokyo Night, etc.)',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mclear\x1b[0m           Clear terminal buffer (Ctrl+L)',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mhistory\x1b[0m         View command history',
-      '\x1b[1;36m│\x1b[0m    \x1b[1muptime\x1b[0m          Show session uptime',
-      '\x1b[1;36m│\x1b[0m',
-      '\x1b[1;36m│\x1b[0m  \x1b[1;33m🎮 EASTER EGGS\x1b[0m',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mcowsay\x1b[0m          Talking ASCII cow',
-      '\x1b[1;36m│\x1b[0m    \x1b[1mfortune\x1b[0m         Software engineering quotes',
-      '\x1b[1;36m│\x1b[0m    \x1b[1msudo\x1b[0m            Try to get root access 😈',
-      '\x1b[1;36m│\x1b[0m',
-      '\x1b[1;36m╰──────────────────────────────────────────────────────────────────────────╯\x1b[0m',
-    ],
-  }),
-};
-
-// ─── Whoami / Bio Command ────────────────────────────────────────────────────
 
 const whoamiCommand: CommandHandler = {
   name: 'whoami',
   aliases: ['whoami', 'about', 'bio', 'me', 'profile'],
-  description: 'Display profile bio and background',
-  usage: 'whoami [-v | --verbose]',
+  description: 'Short bio (add -v for the full story)',
+  usage: 'whoami [-v]',
   execute: (parsed) => {
-    const bio = profileBio;
     const verbose = parsed.flags['v'] === true || parsed.flags['verbose'] === true;
-
-    const output = [
-      '',
-      `  \x1b[1;36m👤 ${bio.fullName.toUpperCase()}\x1b[0m \x1b[1;33m(@qitiya / @Oreniscool)\x1b[0m`,
-      `  \x1b[1;35m${bio.tagline}\x1b[0m`,
-      '  ' + '─'.repeat(60),
-    ];
-
-    if (verbose) {
-      bio.fullBio.forEach((line) => output.push(`  ${line}`));
-      output.push('');
-      output.push('  \x1b[1;36mInterests & Hobbies:\x1b[0m ' + bio.hobbies.join(' • '));
-    } else {
-      output.push(`  ${bio.shortBio}`);
-    }
-
-    output.push('');
-    output.push(`  🐙 \x1b[1;36mGitHub:\x1b[0m   ${bio.socials.github}`);
-    output.push(`  💼 \x1b[1;36mLinkedIn:\x1b[0m ${bio.socials.linkedin}`);
-    output.push(`  📧 \x1b[1;36mEmail:\x1b[0m    ${bio.socials.email}`);
-    if (bio.socials.leetcode) {
-      output.push(`  🧩 \x1b[1;36mLeetCode:\x1b[0m ${bio.socials.leetcode}`);
-    }
-    output.push('');
-    output.push('  \x1b[2m💡 Tip: Type \'whoami -v\' for full background story.\x1b[0m');
-    output.push('');
-
-    return { output };
+    return {
+      output: [
+        heading(profileBio.fullName),
+        `  ${profileBio.tagline}`,
+        '',
+        ...(verbose ? profileBio.fullBio.map((l) => `  ${l}`) : [`  ${profileBio.shortBio}`]),
+        ...(verbose ? ['', `  ${sky('Interests')}  ${profileBio.hobbies.join(', ')}`] : []),
+        '',
+        verbose ? `  ${muted('See')} ${cmd('contact')} ${muted('to get in touch.')}` : `  ${muted('Full story:')} ${cmd('whoami -v')}`,
+      ],
+    };
   },
 };
-
-// ─── Hackathons & Awards Command ─────────────────────────────────────────────
 
 const awardsCommand: CommandHandler = {
   name: 'awards',
   aliases: ['awards', 'wins', 'hackathons', 'trophies', 'achievements'],
-  description: 'Display hackathon championships and case study wins',
+  description: 'Hackathon and case-study results',
   usage: 'awards',
-  execute: () => {
-    const output: string[] = [
-      '',
-      `  \x1b[1;33m🏆 HACKATHON CHAMPIONSHIPS & CASE STUDY WINS — Oren Coelho\x1b[0m`,
-      '  ' + '─'.repeat(74),
-      '',
-    ];
-
-    awards.forEach((a, i) => {
-      const positionPill = `\x1b[1;32m${a.position}\x1b[0m`;
-      const cat = `\x1b[1;35m[${a.category}]\x1b[0m`;
-      output.push(`  \x1b[1;36m${i + 1}.\x1b[0m \x1b[1m${a.title}\x1b[0m — ${positionPill}  ${cat}`);
-      output.push(`     \x1b[2mOrganizer / Event:\x1b[0m ${a.event}`);
-      output.push(`     \x1b[2mSummary:\x1b[0m ${a.description}`);
-      output.push('');
-    });
-
-    output.push('  \x1b[1;32m💡 Tip: Type or click [projects] to explore GitHub repositories.\x1b[0m');
-    output.push('');
-
-    return { output };
-  },
-};
-
-// ─── Skills Command ──────────────────────────────────────────────────────────
-
-const skillsCommand: CommandHandler = {
-  name: 'skills',
-  aliases: ['skills', 'stack', 'tech', 'tools'],
-  description: 'Display technical skills with proficiency bars',
-  usage: 'skills [--category <name>]',
-  execute: () => {
-    const makeBar = (pct: number, colorCode = '32'): string => {
-      const filled = Math.round(pct / 5);
-      const empty = 20 - filled;
-      return `[\x1b[1;${colorCode}m${'█'.repeat(filled)}\x1b[0m${'░'.repeat(empty)}] ${pct}%`;
-    };
-
-    return {
-      output: [
-        '',
-        `  \x1b[1;33m🛠️  TECHNICAL SKILLS & PROFICIENCY — Oren Coelho\x1b[0m`,
-        '  ' + '─'.repeat(65),
-        '',
-        '  \x1b[1;36m[LANGUAGES]\x1b[0m',
-        `    TypeScript          ${makeBar(92, '36')} (Mastery & Type Safety)`,
-        `    JavaScript          ${makeBar(94, '36')} (ESNext / Node.js Runtime)`,
-        `    Python              ${makeBar(88, '32')} (AI/ML, OpenCV, Flask)`,
-        `    C / C++             ${makeBar(82, '34')} (Algorithms & Systems)`,
-        `    Java                ${makeBar(75, '33')} (AES-256 Crypto & OOP)`,
-        `    Solidity            ${makeBar(62, '35')} (Foundry & Smart Contracts)`,
-        `    SQL                 ${makeBar(86, '36')} (PostgreSQL Relational Design)`,
-        '',
-        '  \x1b[1;36m[FRAMEWORKS & PLATFORMS]\x1b[0m',
-        `    React 19 / Next.js  ${makeBar(94, '36')}`,
-        `    Node.js / Express   ${makeBar(88, '32')}`,
-        `    Tailwind CSS v4     ${makeBar(96, '36')}`,
-        `    Supabase / Postgres ${makeBar(85, '33')}`,
-        `    Docker Containers   ${makeBar(72, '34')}`,
-        '',
-        '  \x1b[1;36m[AI / ML & CYBERSECURITY]\x1b[0m',
-        `    PyTorch & TensorFlow ${makeBar(70, '35')}`,
-        `    Scikit-Learn         ${makeBar(78, '32')}`,
-        `    Wavelet Steganography${makeBar(84, '36')}`,
-        `    Applied Cryptography ${makeBar(80, '33')}`,
-        '',
-      ],
-    };
-  },
-};
-
-// ─── GitHub Commits API Widget Command ───────────────────────────────────────
-
-const commitsCommand: CommandHandler = {
-  name: 'commits',
-  aliases: ['commits', 'activity', 'git log', 'gh-activity', '/get commits'],
-  description: 'Display live GitHub commit activity & activity heatmap',
-  usage: 'commits [--live]',
-  execute: async (parsed) => {
-    const live = parsed.flags['live'] === true;
-    const stats = await githubActivityService.getRecentActivity(live);
-
-    const heatmapBlocks = ['░', '▒', '▓', '█'];
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-    const heatmapLines = stats.weeklyContributionGrid.map((weekData, dayIdx) => {
-      const row = weekData.map((level) => {
-        const block = heatmapBlocks[Math.min(level, 3)];
-        if (level === 0) return `\x1b[2m${block}\x1b[0m`;
-        if (level === 1) return `\x1b[32m${block}\x1b[0m`;
-        if (level === 2) return `\x1b[1;32m${block}\x1b[0m`;
-        return `\x1b[1;36m${block}\x1b[0m`;
-      }).join(' ');
-      return `    ${days[dayIdx]}: ${row}`;
-    });
-
-    const commitRows = stats.recentCommits.slice(0, 6).map((c) => {
-      const shortRepo = c.repo.replace('Oreniscool/', '');
-      const timeDiff = Math.max(1, Math.round((Date.now() - new Date(c.date).getTime()) / (3600 * 1000)));
-      const timeStr = timeDiff < 24 ? `${timeDiff}h ago` : `${Math.round(timeDiff / 24)}d ago`;
-      return `    • [\x1b[1;36m${shortRepo}\x1b[0m] \x1b[1;33m${c.sha}\x1b[0m  ${c.message.slice(0, 52)} \x1b[2m(${timeStr})\x1b[0m`;
-    });
-
-    return {
-      output: [
-        '',
-        `  \x1b[1;33m🐙 GitHub Activity Feed — Oren Coelho (@${stats.username})\x1b[0m`,
-        '  ' + '─'.repeat(70),
-        `  🔥 \x1b[1mStreak:\x1b[0m ${stats.currentStreakDays} days   \x1b[2m•\x1b[0m   \x1b[1mTotal Commits (1Y):\x1b[0m ${stats.totalCommitsPastYear}+   \x1b[2m•\x1b[0m   \x1b[1mPublic Repos:\x1b[0m 61`,
-        '',
-        '  \x1b[1;36m[RECENT PUSH EVENTS & COMMITS]\x1b[0m',
-        ...commitRows,
-        '',
-        '  \x1b[1;36m[12-WEEK COMMIT HEATMAP]\x1b[0m',
-        ...heatmapLines,
-        `    \x1b[2mLegend: ░ (0)  ▒ (1-3)  ▓ (4-6)  █ (7+ commits)\x1b[0m`,
-        '',
-        `  \x1b[2m💡 Tip: Run 'commits --live' to force a fresh fetch from GitHub API.\x1b[0m`,
-        '',
-      ],
-    };
-  },
-};
-
-// ─── LeetCode Stats Widget Command ───────────────────────────────────────────
-
-const leetcodeCommand: CommandHandler = {
-  name: 'leetcode',
-  aliases: ['leetcode', 'lc', 'algo', 'stats'],
-  description: 'Display LeetCode problem-solving stats & difficulty progress',
-  usage: 'leetcode [username] [--refresh]',
-  execute: async (parsed) => {
-    const targetUser = parsed.args[0] || 'Oreniscool';
-    const refresh = parsed.flags['refresh'] === true;
-
-    const stats = await leetCodeService.getStats(targetUser, refresh);
-
-    const makeGauge = (solved: number, total: number, colorCode: string): string => {
-      const pct = total > 0 ? (solved / total) * 100 : 0;
-      const filled = Math.round(pct / 5);
-      const empty = 20 - filled;
-      return `[\x1b[1;${colorCode}m${'█'.repeat(filled)}\x1b[0m${'░'.repeat(empty)}] ${String(solved).padStart(3)}/${total} (${pct.toFixed(1)}%)`;
-    };
-
-    return {
-      output: [
-        '',
-        `  \x1b[1;33m🧩 LeetCode Problem-Solving Profile — ${stats.username}\x1b[0m`,
-        '  ' + '─'.repeat(70),
-        `  🏆 \x1b[1mRanking:\x1b[0m ${stats.ranking}   \x1b[2m•\x1b[0m   \x1b[1mAcceptance Rate:\x1b[0m ${stats.acceptanceRate}%   \x1b[2m•\x1b[0m   \x1b[1mTotal Solved:\x1b[0m ${stats.totalSolved}`,
-        '',
-        '  \x1b[1;36m[DIFFICULTY BREAKDOWN]\x1b[0m',
-        `    \x1b[1;32mEASY   \x1b[0m   ${makeGauge(stats.easySolved, stats.totalEasy, '32')}`,
-        `    \x1b[1;33mMEDIUM \x1b[0m   ${makeGauge(stats.mediumSolved, stats.totalMedium, '33')}`,
-        `    \x1b[1;31mHARD   \x1b[0m   ${makeGauge(stats.hardSolved, stats.totalHard, '31')}`,
-        '',
-        '  \x1b[1;36m[KEY TOPICS & ALGORITHMIC PATTERNS]\x1b[0m',
-        '    • Dynamic Programming • Trees & Binary Search • Graph Traversals (BFS/DFS)',
-        '    • Sliding Window & Two Pointers • Hash Maps & Bit Manipulation',
-        '',
-        `  \x1b[2m💡 Tip: Type 'leetcode <username>' to query any developer's stats live!\x1b[0m`,
-        '',
-      ],
-    };
-  },
-};
-
-// ─── Last.fm Music Widget Command ───────────────────────────────────────────
-
-const lastfmCommand: CommandHandler = {
-  name: 'lastfm',
-  aliases: ['lastfm', 'np', 'music', 'spotify', 'nowplaying', 'scrobbles', '/get music'],
-  description: 'Display live Last.fm Now Playing & recently scrobbled tracks',
-  usage: 'lastfm [set <username> [apiKey] | --live]',
-  execute: async (parsed) => {
-    // Check if configuring credentials
-    if (parsed.args[0] === 'set' && parsed.args[1]) {
-      const user = parsed.args[1];
-      const key = parsed.args[2] || '';
-      lastFmService.setConfig(user, key);
-      return {
-        output: [
-          '',
-          `  \x1b[1;32m✓ Last.fm configuration updated!\x1b[0m`,
-          `  \x1b[1;36mUsername:\x1b[0m ${user}`,
-          `  \x1b[1;36mAPI Key:\x1b[0m  ${key ? '••••••••' + key.slice(-4) : '(none set - will use public scrobble mode)'}`,
-          `  Type \x1b[1;33mlastfm\x1b[0m to fetch your live tracks.`,
-          '',
-        ],
-      };
-    }
-
-    const forceLive = parsed.flags['live'] === true || parsed.flags['refresh'] === true;
-    const data = await lastFmService.getRecentTracks(forceLive);
-    const curr = data.currentTrack || (data.recentTracks.length > 0 ? data.recentTracks[0] : null);
-
-    const output: string[] = [
-      '',
-      `  \x1b[1;31m🎵 LAST.FM MUSIC & LIVE SCROBBLES — @${data.username}\x1b[0m`,
-      '  ' + '─'.repeat(74),
-      '',
-    ];
-
-    if (curr) {
-      const isLive = curr.nowPlaying;
-      const statusBadge = isLive
-        ? '\x1b[1;32m● NOW PLAYING\x1b[0m'
-        : `\x1b[2mRecently Played (${curr.playedAt})\x1b[0m`;
-
-      output.push(`  \x1b[1;33m${isLive ? '▶' : '■'}\x1b[0m  ${statusBadge}`);
-      output.push(`     \x1b[1;36mTrack:\x1b[0m  \x1b[1m${curr.name}\x1b[0m`);
-      output.push(`     \x1b[1;36mArtist:\x1b[0m ${curr.artist}`);
-      if (curr.album) output.push(`     \x1b[1;36mAlbum:\x1b[0m  ${curr.album}`);
-      output.push(`     \x1b[1;36mLink:\x1b[0m   ${curr.url}`);
-      output.push('');
-      output.push(`     \x1b[1;35mEqualizer:\x1b[0m [LIVE_AUDIO_EQUALIZER]  \x1b[1;36m[Stereo PCM 48kHz / Lossless]\x1b[0m`);
-      output.push('');
-    }
-
-    if (data.recentTracks.length > 1) {
-      output.push('  \x1b[1;33mRecent Scrobble History:\x1b[0m');
-      data.recentTracks.slice(curr?.nowPlaying ? 1 : 0, 5).forEach((t) => {
-        const time = (t.playedAt || '').padEnd(12);
-        output.push(`    \x1b[2m${time}\x1b[0m \x1b[1m${t.name}\x1b[0m \x1b[2m—\x1b[0m \x1b[1;36m${t.artist}\x1b[0m`);
-      });
-      output.push('');
-    }
-
-    output.push(`  \x1b[2m💡 Configure your Last.fm: Type 'lastfm set <username> [apiKey]'\x1b[0m`);
-    output.push('');
-
-    return { output };
-  },
-};
-
-// ─── Contact Command ─────────────────────────────────────────────────────────
-
-const contactCommand: CommandHandler = {
-  name: 'contact',
-  aliases: ['contact', 'socials', 'email', 'reach'],
-  description: 'Display contact information and social links',
-  usage: 'contact',
   execute: () => ({
     output: [
-      '',
-      `  \x1b[1;33m📬 Connect with Oren Coelho:\x1b[0m`,
-      '  ' + '─'.repeat(60),
-      `  💼 \x1b[1;36mLinkedIn:\x1b[0m ${profileBio.socials.linkedin}`,
-      `  🐙 \x1b[1;36mGitHub:\x1b[0m   ${profileBio.socials.github}`,
-      `  📧 \x1b[1;36mEmail:\x1b[0m    ${profileBio.socials.email}`,
-      `  🧩 \x1b[1;36mLeetCode:\x1b[0m ${profileBio.socials.leetcode}`,
-      '',
-      '  \x1b[2m💡 Tip: Click any link above to open in a new tab.\x1b[0m',
-      '',
+      heading(`Awards: ${awardsSummary}`),
+      ...awards.flatMap((a) => [
+        `  ${bold(a.title)}  ${/runner/i.test(a.position) ? sky(a.badge.replace(/^\S+\s/, '')) : mint(a.badge.replace(/^\S+\s/, ''))}`,
+        `  ${muted(`${a.event} · ${a.category}`)}`,
+        `  ${a.description}`,
+        '',
+      ]),
+      `  ${muted('Next:')} ${cmd('projects')}`,
     ],
   }),
 };
 
-// ─── Projects List Command ───────────────────────────────────────────────────
+const SKILL_GROUPS: Array<[string, string[]]> = [
+  ['Languages', ['TypeScript', 'JavaScript', 'Python', 'Java', 'Solidity', 'SQL']],
+  ['Frameworks', ['React', 'Next.js', 'Node.js', 'Express', 'Tailwind CSS', 'Flask', 'Supabase']],
+  ['Data and infra', ['PostgreSQL', 'MongoDB', 'Docker', 'WebSockets']],
+  ['AI and security', ['PyTorch', 'TensorFlow', 'Scikit-Learn', 'OpenCV', 'AES-256']],
+];
 
-const projectsCommand: CommandHandler = {
-  name: 'projects',
-  aliases: ['projects', 'get projects', '/get projects', 'project list'],
-  description: 'List all curated projects with pinned ones prioritized',
-  usage: 'projects [--category <type>]',
-  execute: (parsed) => {
-    let filtered = [...projects];
-
-    const category = parsed.flags['category'];
-    if (typeof category === 'string') {
-      filtered = filtered.filter((p) => p.category === category);
+const skillsCommand: CommandHandler = {
+  name: 'skills',
+  aliases: ['skills', 'stack', 'tech', 'tools'],
+  description: 'Skills, each linked to the projects that use it',
+  usage: 'skills',
+  execute: () => {
+    const usedIn = (skill: string) =>
+      projects
+        .filter((p) => p.techStack.some((t) => t.toLowerCase().startsWith(skill.toLowerCase())))
+        .map((p) => p.name);
+    const output: OutputItem[] = [heading('Skills')];
+    for (const [group, skills] of SKILL_GROUPS) {
+      output.push(`  ${bold(group)}`);
+      for (const s of skills) {
+        const names = usedIn(s);
+        output.push(`    ${s.padEnd(14)}${names.length ? muted(`used in ${names.join(', ')}`) : ''}`);
+      }
+      output.push('');
     }
-
-    const pinnedProjects = filtered.filter((p) => p.isPinned);
-    const otherProjects = filtered.filter((p) => !p.isPinned);
-
-    const output: string[] = [
-      '',
-      `  \x1b[1;33m🚀 CURATED IMPACTFUL PROJECTS — Oren Coelho\x1b[0m`,
-      '  ' + '─'.repeat(74),
-      '',
-      '  \x1b[1;33m📌 PINNED SPOTLIGHT PROJECTS (Top Priority)\x1b[0m',
-    ];
-
-    pinnedProjects.forEach((p, i) => {
-      const num = String(i + 1).padStart(2);
-      const name = p.name.padEnd(20);
-      const cat = `[${p.category}]`.padEnd(12);
-      const actionPill = `[project ${p.slug}]`.padEnd(20);
-      const tech = p.techStack.slice(0, 3).join(', ');
-      output.push(`    \x1b[1;36m${num}\x1b[0m  \x1b[1m${name}\x1b[0m \x1b[1;35m${cat}\x1b[0m ${actionPill} \x1b[2m${tech}\x1b[0m`);
-    });
-
-    output.push('');
-    output.push('  \x1b[1;36m⭐ OTHER CURATED ENGINEERING PROJECTS\x1b[0m');
-
-    otherProjects.forEach((p, i) => {
-      const num = String(pinnedProjects.length + i + 1).padStart(2);
-      const name = p.name.padEnd(20);
-      const cat = `[${p.category}]`.padEnd(12);
-      const actionPill = `[project ${p.slug}]`.padEnd(20);
-      const tech = p.techStack.slice(0, 3).join(', ');
-      output.push(`    \x1b[1;36m${num}\x1b[0m  \x1b[1m${name}\x1b[0m \x1b[2m${cat}\x1b[0m ${actionPill} \x1b[2m${tech}\x1b[0m`);
-    });
-
-    output.push('');
-    output.push('  \x1b[1;32m💡 Click any [project <name>] button above or type "project <name>" to print detailed architecture!\x1b[0m');
-    output.push('');
-
+    output.push(`  ${muted('Open a project with')} ${cmd('projects')}`);
     return { output };
   },
 };
 
-// ─── Single Project View Command ─────────────────────────────────────────────
+// ─── Live data ───────────────────────────────────────────────────────────────
 
-const projectCommand: CommandHandler = {
-  name: 'project',
-  aliases: ['project', 'get project', 'show project', 'inspect', 'preview'],
-  description: 'View detailed project specifications in terminal buffer',
-  usage: 'project <name>',
-  execute: (parsed) => {
-    const query = parsed.args.join(' ').toLowerCase();
-    if (!query) {
-      return { output: ['  \x1b[1;31mUsage: project <name>\x1b[0m', '  Example: project aegis, project cohortly, project respinet'], isError: true };
+const activityCommand: CommandHandler = {
+  name: 'activity',
+  aliases: ['activity', 'commits', 'github', 'git', 'gh-activity'],
+  description: 'Recent public GitHub activity (live)',
+  usage: 'activity [--refresh]',
+  execute: async (parsed) => {
+    const data = await getGitHubActivity(usernames.github, parsed.flags['refresh'] === true);
+    if (!data) {
+      return error(
+        "GitHub activity couldn't be loaded right now.",
+        `See it directly at ${profileBio.socials.github}`
+      );
     }
-
-    const found = projects.find(
-      (p) =>
-        p.slug === query ||
-        p.name.toLowerCase() === query ||
-        p.name.toLowerCase().includes(query)
-    );
-
-    if (!found) {
-      return { output: [`  \x1b[1;31mProject not found: "${query}"\x1b[0m`, '  Run \'projects\' to view all available projects.'], isError: true };
+    const output: OutputItem[] = [heading('Recent GitHub activity')];
+    if (data.publicRepos !== null) output.push(`  ${data.publicRepos} public repositories`, '');
+    if (data.pushes.length === 0) {
+      output.push(`  ${muted('No public pushes in the last 90 days.')}`);
+    } else {
+      for (const p of data.pushes) {
+        output.push(`  ${muted(timeAgo(Date.parse(p.date)).padEnd(11))}pushed to ${sky(p.repo.replace(`${usernames.github}/`, ''))} ${muted(`(${p.branch})`)}`);
+      }
     }
+    output.push('', `  ${muted(`Updated ${timeAgo(data.fetchedAt)} · ${profileBio.socials.github}`)}`);
+    return { output };
+  },
+};
 
-    const pinLabel = found.isPinned ? ' \x1b[1;33m[PINNED 📌]\x1b[0m' : '';
+const leetcodeCommand: CommandHandler = {
+  name: 'leetcode',
+  aliases: ['leetcode', 'lc', 'dsa', 'algo'],
+  description: 'LeetCode stats (live)',
+  usage: 'leetcode [username] [--refresh]',
+  execute: async (parsed) => {
+    const user = parsed.args[0] || usernames.leetcode;
+    const s = await getLeetCodeStats(user, parsed.flags['refresh'] === true);
+    if (!s) {
+      return error("LeetCode stats couldn't be loaded right now.", `See them directly at https://leetcode.com/u/${user}/`);
+    }
+    const line = (label: string, solved: number, total: number) =>
+      `  ${label.padEnd(9)}${String(solved).padStart(4)} ${muted(`of ${total}`)}`;
     return {
       output: [
+        heading(`LeetCode: ${s.username}`),
+        `  ${bold(String(s.totalSolved))} problems solved${typeof s.ranking === 'number' ? muted(` · ranking ${s.ranking.toLocaleString('en-US')}`) : ''}`,
         '',
-        '  \x1b[1;36m══════════════════════════════════════════════════════════════════════════════\x1b[0m',
-        `  \x1b[1;33m🚀 PROJECT: ${found.name}\x1b[0m${pinLabel}`,
-        '  \x1b[1;36m══════════════════════════════════════════════════════════════════════════════\x1b[0m',
-        `  \x1b[1;36mTagline:\x1b[0m     ${found.tagline}`,
-        `  \x1b[1;36mCategory:\x1b[0m    ${found.category.toUpperCase()}   |   \x1b[1;36mStatus:\x1b[0m ${found.status === 'active' ? '\x1b[1;32m🟢 Active\x1b[0m' : '\x1b[1;32m✅ Production\x1b[0m'}   |   \x1b[1;36mLicense:\x1b[0m MIT Open Source`,
+        line('Easy', s.easySolved, s.totalEasy),
+        line('Medium', s.mediumSolved, s.totalMedium),
+        line('Hard', s.hardSolved, s.totalHard),
         '',
-        `  \x1b[1;33m⚡ ARCHITECTURE & CORE PURPOSE:\x1b[0m`,
-        `  ${found.description}`,
-        '',
-        `  \x1b[1;35m🛠️  TECH STACK & ECOSYSTEM:\x1b[0m`,
-        `  ${found.techStack.map((t) => `\x1b[1;36m[${t}]\x1b[0m`).join('  ')}`,
-        '',
-        `  \x1b[1;32m⭐ KEY ENGINEERING HIGHLIGHTS:\x1b[0m`,
-        ...found.highlights.map((h) => `    \x1b[1;32m✔\x1b[0m  ${h}`),
-        '',
-        `  \x1b[1;34m🔗 LINKS & REPOSITORY:\x1b[0m`,
-        `    🐙 GitHub: ${found.githubUrl}`,
-        ...(found.liveUrl ? [`    🌐 Live:   ${found.liveUrl}`] : []),
-        '',
-        '  \x1b[1;36m══════════════════════════════════════════════════════════════════════════════\x1b[0m',
-        '',
+        `  ${muted(`Updated ${timeAgo(s.fetchedAt)} · https://leetcode.com/u/${s.username}/`)}`,
       ],
     };
   },
 };
 
-// ─── Unix VFS Commands (ls, cd, pwd, cat, tree) ──────────────────────────────
+const musicCommand: CommandHandler = {
+  name: 'music',
+  aliases: ['music', 'lastfm', 'np', 'spotify', 'nowplaying', 'scrobbles'],
+  description: 'What Oren is listening to (live from Last.fm)',
+  usage: 'music [--refresh]',
+  execute: async (parsed) => {
+    const data = await getRecentTracks(usernames.lastfm, parsed.flags['refresh'] === true);
+    if (!data || data.recentTracks.length === 0) {
+      return error("Last.fm couldn't be reached right now.", `See it directly at ${profileBio.socials.lastfm}`);
+    }
+    const [first, ...rest] = data.recentTracks;
+    const output: OutputItem[] = [heading(first.nowPlaying ? 'Now playing' : 'Last played')];
+    output.push(`  ${first.nowPlaying ? '[LIVE_EQ] ' : ''}${bold(first.name)} ${muted('by')} ${first.artist}`);
+    if (first.album) output.push(`  ${muted(first.album)}`);
+    if (!first.nowPlaying && first.playedAtMs) output.push(`  ${muted(timeAgo(first.playedAtMs))}`);
+    if (rest.length) {
+      output.push('', `  ${bold('Earlier')}`);
+      for (const t of rest.slice(0, 4)) {
+        output.push(`  ${muted((t.playedAtMs ? timeAgo(t.playedAtMs) : '').padEnd(11))}${t.name} ${muted('by')} ${t.artist}`);
+      }
+    }
+    output.push('', `  ${muted(`Updated ${timeAgo(data.fetchedAt)} · ${profileBio.socials.lastfm}`)}`);
+    return { output };
+  },
+};
 
-let pathUpdateCallback: ((path: string) => void) | null = null;
-export function registerPathCallback(cb: (path: string) => void) {
-  pathUpdateCallback = cb;
+// ─── Contact & CV ────────────────────────────────────────────────────────────
+
+const contactCommand: CommandHandler = {
+  name: 'contact',
+  aliases: ['contact', 'socials', 'email', 'reach'],
+  description: 'Email and social links',
+  usage: 'contact',
+  execute: () => ({
+    output: [
+      heading('Get in touch'),
+      `  ${'Email'.padEnd(10)}${profileBio.socials.email}`,
+      `  ${'GitHub'.padEnd(10)}${profileBio.socials.github}`,
+      `  ${'LinkedIn'.padEnd(10)}${profileBio.socials.linkedin}`,
+      ...(profileBio.socials.leetcode ? [`  ${'LeetCode'.padEnd(10)}${profileBio.socials.leetcode}`] : []),
+      ...(profileBio.cvUrl ? ['', `  ${'CV'.padEnd(10)}${cmd('cv')}`] : []),
+    ],
+  }),
+};
+
+const cvCommand: CommandHandler = {
+  name: 'cv',
+  aliases: ['cv', 'resume'],
+  description: 'Download the CV',
+  usage: 'cv',
+  execute: () => {
+    if (profileBio.cvUrl) {
+      window.open(profileBio.cvUrl, '_blank', 'noopener');
+      return { output: [`  Opening the CV in a new tab. ${muted('If nothing opened:')} ${new URL(profileBio.cvUrl, window.location.href).href}`] };
+    }
+    return {
+      output: [`  The CV isn't online yet. Email ${profileBio.socials.email} for a copy.`],
+    };
+  },
+};
+
+// ─── Projects ────────────────────────────────────────────────────────────────
+
+function findProject(query: string): ProjectItem | undefined {
+  const q = query.toLowerCase();
+  return (
+    projects.find((p) => p.slug === q || p.name.toLowerCase() === q) ??
+    projects.find((p) => p.slug.includes(q) || p.name.toLowerCase().includes(q))
+  );
 }
+
+const projectsCommand: CommandHandler = {
+  name: 'projects',
+  aliases: ['projects', 'proj', 'work', 'portfolio', 'ls-projects'],
+  description: 'All projects; click one to open it',
+  usage: 'projects [--category <web|ai|security|cli|web3|systems>]',
+  execute: (parsed) => {
+    const category = parsed.flags['category'];
+    const list = typeof category === 'string' ? projects.filter((p) => p.category === category) : projects;
+    if (list.length === 0) {
+      return error(`No projects in category "${String(category)}".`, 'Categories: web, ai, security, cli, web3, systems');
+    }
+    const pinned = list.filter((p) => p.isPinned);
+    const others = list.filter((p) => !p.isPinned);
+    return {
+      output: [
+        ...(pinned.length ? [{ kind: 'projects' as const, title: 'Pinned projects', items: pinned }] : []),
+        ...(others.length ? [{ kind: 'projects' as const, title: pinned.length ? 'Other projects' : 'Projects', items: others }] : []),
+        muted('  Click a row to open it, or type project <name>.'),
+      ],
+    };
+  },
+};
+
+const projectCommand: CommandHandler = {
+  name: 'project',
+  aliases: ['project', 'inspect', 'preview'],
+  description: 'Open one project',
+  usage: 'project <name>',
+  execute: (parsed) => {
+    const query = parsed.args.join(' ');
+    if (!query) return error('Usage: project <name>', 'For example: project aegis');
+    const found = findProject(query);
+    if (!found) return error(`No project matches "${query}".`, 'See all of them with: projects');
+    return { output: [{ kind: 'project', project: found }] };
+  },
+};
+
+export { statusLabel };
+
+// ─── Files ───────────────────────────────────────────────────────────────────
 
 const lsCommand: CommandHandler = {
   name: 'ls',
   aliases: ['ls', 'dir'],
-  description: 'List directory contents in VFS',
+  description: 'List files',
   usage: 'ls [path]',
   execute: (parsed) => {
     const res = virtualFileSystem.listFiles(parsed.args[0] || '');
-    if (!res.success) {
-      return { output: [`  \x1b[1;31m${res.error}\x1b[0m`], isError: true };
-    }
-
-    const items = res.files?.map((f) => {
-      if (f.isDir) {
-        return `\x1b[1;34m${f.name}/\x1b[0m`;
-      }
-      return f.name;
-    }) || [];
-
-    return {
-      output: ['', `  ${items.join('   ')}`, ''],
-    };
+    if (!res.success) return error(res.error ?? 'ls failed');
+    const items = res.files?.map((f) => (f.isDir ? sky(`${f.name}/`) : f.name)) ?? [];
+    return { output: [`  ${items.join('   ')}`] };
   },
 };
 
 const cdCommand: CommandHandler = {
   name: 'cd',
   aliases: ['cd'],
-  description: 'Change directory in VFS',
+  description: 'Change directory',
   usage: 'cd <directory>',
   execute: (parsed) => {
-    const target = parsed.args[0] || '~';
-    const res = virtualFileSystem.changeDirectory(target);
-    if (!res.success) {
-      return { output: [`  \x1b[1;31m${res.error}\x1b[0m`], isError: true };
-    }
-    if (pathUpdateCallback) {
-      pathUpdateCallback(virtualFileSystem.getDisplayPath());
-    }
+    const res = virtualFileSystem.changeDirectory(parsed.args[0] || '~');
+    if (!res.success) return error(res.error ?? 'cd failed');
+    ctx?.setPath(virtualFileSystem.getDisplayPath());
     return { output: [] };
   },
 };
@@ -577,156 +358,118 @@ const cdCommand: CommandHandler = {
 const pwdCommand: CommandHandler = {
   name: 'pwd',
   aliases: ['pwd'],
-  description: 'Print current working directory',
+  description: 'Print the current directory',
   usage: 'pwd',
-  execute: () => ({
-    output: [`  ${virtualFileSystem.getCurrentPath()}`],
-  }),
+  execute: () => ({ output: [`  ${virtualFileSystem.getCurrentPath()}`] }),
 };
 
 const catCommand: CommandHandler = {
   name: 'cat',
   aliases: ['cat'],
-  description: 'Print file contents',
-  usage: 'cat <filename>',
+  description: 'Print a file',
+  usage: 'cat <file>',
   execute: (parsed) => {
-    if (!parsed.args[0]) {
-      return { output: ['  \x1b[1;31mcat: missing file operand\x1b[0m'], isError: true };
-    }
+    if (!parsed.args[0]) return error('cat: which file? For example: cat about.md');
     const res = virtualFileSystem.readFile(parsed.args[0]);
-    if (!res.success) {
-      return { output: [`  \x1b[1;31m${res.error}\x1b[0m`], isError: true };
-    }
-    return {
-      output: ['', ...res.content!.split('\n').map((l) => `  ${l}`), ''],
-    };
+    if (!res.success) return error(res.error ?? 'cat failed');
+    return { output: res.content!.split('\n').map((l) => `  ${l}`) };
   },
 };
 
 const treeCommand: CommandHandler = {
   name: 'tree',
   aliases: ['tree'],
-  description: 'Render directory tree',
+  description: 'Show the file tree',
   usage: 'tree',
-  execute: () => {
-    const lines = virtualFileSystem.renderTree();
-    return {
-      output: ['', `  \x1b[1;34m.\x1b[0m`, ...lines.map((l) => `  ${l}`), ''],
-    };
-  },
+  execute: () => ({ output: [`  ${sky('.')}`, ...virtualFileSystem.renderTree().map((l) => `  ${l}`)] }),
 };
 
-// ─── Theme & Terminal Utilities ──────────────────────────────────────────────
-
-let themeSetCallback: ((id: ThemeId) => void) | null = null;
-export function registerThemeCallback(cb: (id: ThemeId) => void) {
-  themeSetCallback = cb;
-}
+// ─── Settings ────────────────────────────────────────────────────────────────
 
 const themeCommand: CommandHandler = {
   name: 'theme',
-  aliases: ['theme', 'themes'],
-  description: 'List or switch terminal themes',
-  usage: 'theme [set <name>]',
+  aliases: ['theme', 'themes', 'colors'],
+  description: 'List or switch colour themes',
+  usage: 'theme [name | auto]',
   execute: (parsed) => {
-    if (parsed.args[0] === 'set' && parsed.args[1]) {
-      const id = parsed.args[1] as ThemeId;
-      if (themes[id]) {
-        if (themeSetCallback) themeSetCallback(id);
-        return { output: [`  \x1b[1;32m✓ Theme switched to: ${themes[id].name}\x1b[0m`] };
-      }
-      return { output: [`  \x1b[1;31mUnknown theme: "${parsed.args[1]}"\x1b[0m`], isError: true };
+    const arg = (parsed.args[0] === 'set' ? parsed.args[1] : parsed.args[0])?.toLowerCase();
+    if (arg === 'auto') {
+      ctx?.setTheme(null);
+      return { output: ['  Theme now follows your system: Blueprint when dark, Whiteprint when light.'] };
     }
-
-    const themeList = Object.values(themes).map(
-      (t) => `    \x1b[1m${t.id.padEnd(20)}\x1b[0m ${t.name}`
-    );
-
+    if (arg) {
+      const id = arg as ThemeId;
+      if (!themes[id]) return error(`There's no theme called "${arg}".`, 'See the list with: theme');
+      ctx?.setTheme(id);
+      return { output: [`  Switched to ${themes[id].name}.`] };
+    }
     return {
       output: [
-        '',
-        '  \x1b[1;33mAvailable Themes:\x1b[0m',
-        '',
-        ...themeList,
-        '',
-        '  \x1b[2mUsage: theme set <id>  (e.g. theme set tokyo-night)\x1b[0m',
-        '',
+        heading('Themes'),
+        ...themeIds.map((id) => `  ${cmd(`theme ${id}`)}  ${muted(themes[id].name)}`),
+        `  ${cmd('theme auto')}  ${muted('Follow the system setting (default)')}`,
       ],
     };
   },
 };
 
-let clearCallback: (() => void) | null = null;
-export function registerClearCallback(cb: () => void) {
-  clearCallback = cb;
-}
+const phosphorCommand: CommandHandler = {
+  name: 'phosphor',
+  aliases: ['phosphor', 'crt', 'scanlines'],
+  description: 'Toggle the retro CRT look (scanlines and typewriter output)',
+  usage: 'phosphor',
+  execute: () => ({ output: [ctx?.togglePhosphor() ? '  Phosphor mode on.' : '  Phosphor mode off.'] }),
+};
+
+const soundCommand: CommandHandler = {
+  name: 'sound',
+  aliases: ['sound', 'sfx', 'audio', 'mute'],
+  description: 'Toggle keyboard sounds',
+  usage: 'sound',
+  execute: () => ({ output: [ctx?.toggleSound() ? '  Keyboard sounds on.' : '  Keyboard sounds off.'] }),
+};
 
 const clearCommand: CommandHandler = {
   name: 'clear',
   aliases: ['clear', 'cls'],
-  description: 'Clear the terminal screen',
+  description: 'Clear the screen (Ctrl+L)',
   usage: 'clear',
   execute: () => {
-    if (clearCallback) clearCallback();
+    ctx?.clear();
     return { output: [] };
   },
 };
 
-let historyCallback: (() => string[]) | null = null;
-export function registerHistoryCallback(cb: () => string[]) {
-  historyCallback = cb;
-}
-
 const historyCommand: CommandHandler = {
   name: 'history',
   aliases: ['history'],
-  description: 'Show command history',
+  description: 'Commands run this session',
   usage: 'history',
   execute: () => {
-    const hist = historyCallback ? historyCallback() : [];
-    if (hist.length === 0) {
-      return { output: ['  No commands in history.'] };
-    }
-    return {
-      output: [
-        '',
-        '  \x1b[1;33mCommand History:\x1b[0m',
-        '',
-        ...hist.map((cmd, i) => `    \x1b[1;36m${String(i + 1).padStart(3)}\x1b[0m  ${cmd}`),
-        '',
-      ],
-    };
+    const hist = [...(ctx?.getHistory() ?? [])].reverse();
+    if (hist.length === 0) return { output: ['  No commands yet.'] };
+    return { output: hist.map((c, i) => `  ${muted(String(i + 1).padStart(3))}  ${c}`) };
   },
 };
 
-let uptimeStart: number = Date.now();
-export function registerUptimeStart(start: number) {
-  uptimeStart = start;
-}
+// ─── Extras ──────────────────────────────────────────────────────────────────
 
 const uptimeCommand: CommandHandler = {
   name: 'uptime',
   aliases: ['uptime'],
-  description: 'Show session uptime',
+  description: 'How long this session has run',
   usage: 'uptime',
   execute: () => {
-    const elapsed = Date.now() - uptimeStart;
-    const secs = Math.floor(elapsed / 1000);
-    const mins = Math.floor(secs / 60);
-    const hrs = Math.floor(mins / 60);
-    const display = hrs > 0
-      ? `${hrs}h ${mins % 60}m ${secs % 60}s`
-      : mins > 0
-        ? `${mins}m ${secs % 60}s`
-        : `${secs}s`;
-    return { output: [`  Session uptime: ${display}`] };
+    const secs = Math.floor((Date.now() - (ctx?.sessionStart ?? Date.now())) / 1000);
+    const m = Math.floor(secs / 60);
+    return { output: [`  Up ${m > 0 ? `${m}m ` : ''}${secs % 60}s`] };
   },
 };
 
 const dateCommand: CommandHandler = {
   name: 'date',
   aliases: ['date'],
-  description: 'Show current date and time',
+  description: 'Current date and time',
   usage: 'date',
   execute: () => ({ output: [`  ${new Date().toString()}`] }),
 };
@@ -734,73 +477,104 @@ const dateCommand: CommandHandler = {
 const echoCommand: CommandHandler = {
   name: 'echo',
   aliases: ['echo'],
-  description: 'Echo text back to terminal',
+  description: 'Print text',
   usage: 'echo <text>',
-  execute: (parsed) => ({ output: [parsed.args.join(' ') || ''] }),
+  execute: (parsed) => ({ output: [`  ${parsed.args.join(' ')}`] }),
 };
 
 const cowsayCommand: CommandHandler = {
   name: 'cowsay',
   aliases: ['cowsay'],
-  description: 'Talking ASCII cow',
+  description: 'A talking cow',
   usage: 'cowsay <message>',
   execute: (parsed) => {
-    const msg = parsed.args.join(' ') || 'Moo! Type help to explore Oren\'s portfolio.';
-    const border = '_'.repeat(msg.length + 2);
+    const msg = parsed.args.join(' ') || 'Moo. Type help to look around.';
     return {
       output: [
-        ` ${border}`,
-        `< ${msg} >`,
-        ` ${'-'.repeat(msg.length + 2)}`,
-        '        \\   ^__^',
-        '         \\  (oo)\\_______',
-        '            (__)\\       )\\/\\',
-        '                ||----w |',
-        '                ||     ||',
+        `   ${'_'.repeat(msg.length + 2)}`,
+        `  < ${msg} >`,
+        `   ${'-'.repeat(msg.length + 2)}`,
+        '          \\   ^__^',
+        '           \\  (oo)\\_______',
+        '              (__)\\       )\\/\\',
+        '                  ||----w |',
+        '                  ||     ||',
       ],
     };
   },
 };
 
 const fortunes = [
-  '"Any fool can write code that a computer can understand. Good programmers write code that humans can understand." — Martin Fowler',
-  '"First, solve the problem. Then, write the code." — John Johnson',
-  '"Talk is cheap. Show me the code." — Linus Torvalds',
-  '"Programs must be written for people to read, and only incidentally for machines to execute." — Abelson & Sussman',
-  '"The best way to predict the future is to implement it." — David Heinemeier Hansson',
-  '"Simplicity is prerequisite for reliability." — Edsger W. Dijkstra',
-  '"There are only two hard things in Computer Science: cache invalidation and naming things." — Phil Karlton',
-  '"Debugging is twice as hard as writing the code in the first place." — Brian Kernighan',
+  '"Any fool can write code that a computer can understand. Good programmers write code that humans can understand." Martin Fowler',
+  '"First, solve the problem. Then, write the code." John Johnson',
+  '"Talk is cheap. Show me the code." Linus Torvalds',
+  '"Programs must be written for people to read, and only incidentally for machines to execute." Abelson and Sussman',
+  '"Simplicity is prerequisite for reliability." Edsger W. Dijkstra',
+  '"There are only two hard things in Computer Science: cache invalidation and naming things." Phil Karlton',
+  '"Debugging is twice as hard as writing the code in the first place." Brian Kernighan',
 ];
 
 const fortuneCommand: CommandHandler = {
   name: 'fortune',
   aliases: ['fortune'],
-  description: 'Random programming wisdom',
+  description: 'A programming quote',
   usage: 'fortune',
-  execute: () => ({
-    output: ['', `  ${fortunes[Math.floor(Math.random() * fortunes.length)]}`, ''],
-  }),
+  execute: () => ({ output: [`  ${fortunes[Math.floor(Math.random() * fortunes.length)]}`] }),
 };
 
 const sudoCommand: CommandHandler = {
   name: 'sudo',
   aliases: ['sudo', 'su'],
-  description: 'Root privilege escalation',
+  description: 'Try it',
   usage: 'sudo <command>',
-  execute: () => ({
-    output: [
-      '',
-      '  \x1b[1;31m[sudo] password for guest: ********\x1b[0m',
-      '  \x1b[1;31mguest is not in the sudoers file.\x1b[0m',
-      '  \x1b[1;31mThis incident will be reported to Santa Claus. 🎅\x1b[0m',
-      '',
-    ],
-    isError: true,
-  }),
+  execute: () => error('guest is not in the sudoers file. This incident will be reported.'),
 };
 
-// ─── All Registered Commands ─────────────────────────────────────────────────
+// ─── Help ────────────────────────────────────────────────────────────────────
+
+const HELP_GROUPS: Array<[string, string[]]> = [
+  ['About Oren', ['whoami', 'projects', 'awards', 'skills', 'contact', 'cv']],
+  ['Live', ['activity', 'leetcode', 'music']],
+  ['Files', ['ls', 'cd', 'cat', 'tree', 'pwd']],
+  ['Settings', ['theme', 'phosphor', 'sound', 'clear', 'history']],
+  ['Extras', ['fastfetch', 'fortune', 'cowsay', 'uptime', 'sudo']],
+];
+
+const helpCommand: CommandHandler = {
+  name: 'help',
+  aliases: ['help', 'man', '?', 'commands'],
+  description: 'List commands, or explain one',
+  usage: 'help [command]',
+  execute: (parsed) => {
+    if (parsed.args[0]) {
+      const h = commandMap.get(parsed.args[0].toLowerCase());
+      if (!h) return error(`There's no command called "${parsed.args[0]}".`);
+      const others = h.aliases.filter((a) => a !== h.name);
+      return {
+        output: [
+          heading(h.name),
+          `  ${h.description}`,
+          '',
+          `  ${sky('Usage')}    ${h.usage}`,
+          ...(others.length ? [`  ${sky('Also')}     ${others.join(', ')}`] : []),
+        ],
+      };
+    }
+    const output: OutputItem[] = [heading('Commands')];
+    for (const [group, names] of HELP_GROUPS) {
+      output.push(`  ${bold(group)}`);
+      for (const n of names) {
+        const h = commandMap.get(n);
+        if (h && !(n === 'cv' && !profileBio.cvUrl)) output.push(`    ${cmd(n)}${' '.repeat(Math.max(1, 11 - n.length))}${muted(h.description)}`);
+      }
+      output.push('');
+    }
+    output.push(`  ${muted('Keys: Tab completes, ↑ ↓ recall history, Ctrl+K searches, Ctrl+L clears.')}`);
+    return { output };
+  },
+};
+
+// ─── Registry ────────────────────────────────────────────────────────────────
 
 const allCommands: CommandHandler[] = [
   helpCommand,
@@ -808,10 +582,11 @@ const allCommands: CommandHandler[] = [
   whoamiCommand,
   awardsCommand,
   skillsCommand,
-  commitsCommand,
+  activityCommand,
   leetcodeCommand,
-  lastfmCommand,
+  musicCommand,
   contactCommand,
+  cvCommand,
   projectsCommand,
   projectCommand,
   lsCommand,
@@ -820,6 +595,8 @@ const allCommands: CommandHandler[] = [
   catCommand,
   treeCommand,
   themeCommand,
+  phosphorCommand,
+  soundCommand,
   clearCommand,
   historyCommand,
   dateCommand,
@@ -831,35 +608,66 @@ const allCommands: CommandHandler[] = [
 ];
 
 const commandMap = new Map<string, CommandHandler>();
-allCommands.forEach((cmd) => {
-  cmd.aliases.forEach((alias) => {
-    commandMap.set(alias.toLowerCase(), cmd);
-  });
-});
+for (const c of allCommands) for (const a of c.aliases) commandMap.set(a.toLowerCase(), c);
+
+function editDistance(a: string, b: string): number {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+function suggest(input: string): string | null {
+  let best: string | null = null;
+  let bestScore = Infinity;
+  for (const alias of commandMap.keys()) {
+    const d = editDistance(input, alias);
+    if (d < bestScore) {
+      bestScore = d;
+      best = commandMap.get(alias)!.name;
+    }
+  }
+  return bestScore <= Math.max(1, Math.floor(input.length / 3)) ? best : null;
+}
 
 export async function executeCommand(parsed: ParsedCommand): Promise<CommandResult> {
-  if (!parsed.command) {
-    return { output: [] };
-  }
-
+  if (!parsed.command) return { output: [] };
   const handler = commandMap.get(parsed.command.toLowerCase());
-  if (handler) {
-    return await handler.execute(parsed);
-  }
+  if (handler) return handler.execute(parsed);
 
+  const guess = suggest(parsed.command.toLowerCase());
   return {
     output: [
-      `  \x1b[1;31mzsh: command not found: ${parsed.command}\x1b[0m`,
-      '  Type \x1b[1mhelp\x1b[0m for a list of available commands.',
+      rose(`  command not found: ${parsed.command}`),
+      guess ? `  Did you mean ${cmd(guess)}? ${muted('Or see')} ${cmd('help')}` : `  ${muted('See all commands with')} ${cmd('help')}`,
     ],
     isError: true,
   };
 }
 
-export function getCommandNames(): string[] {
-  return allCommands.map((c) => c.name);
+/** The primary command name for typed text ("about -v" → "whoami"), or null. */
+export function resolveCommandName(text: string): string | null {
+  return commandMap.get(text.trim().split(/\s+/)[0]?.toLowerCase() ?? '')?.name ?? null;
 }
 
-export function getAllAliases(): string[] {
-  return Array.from(commandMap.keys());
+/** True when the first word of `text` is a known command (used to make "[...]" clickable). */
+export function isKnownCommand(text: string): boolean {
+  return commandMap.has(text.trim().split(/\s+/)[0].toLowerCase());
+}
+
+/** Command names for Tab completion: primary names first, then aliases. */
+export function getCompletions(): string[] {
+  const names = allCommands.map((c) => c.name);
+  const aliases = [...commandMap.keys()].filter((a) => !names.includes(a));
+  return [...names, ...aliases];
+}
+
+export function getCommandSummaries(): Array<{ name: string; description: string }> {
+  return allCommands
+    .filter((c) => c.name !== 'cv' || profileBio.cvUrl)
+    .map((c) => ({ name: c.name, description: c.description }));
 }

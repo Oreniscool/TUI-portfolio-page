@@ -1,87 +1,49 @@
-import { useRef, useCallback, useState, useEffect } from 'react';
-import Waybar from './components/waybar/Waybar';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import IdentityPane from './components/identity/IdentityPane';
 import Terminal from './components/terminal/Terminal';
-import CyberpunkBackground from './components/background/CyberpunkBackground';
-import { WelcomeHub } from './components/welcome/WelcomeHub';
+import StatusBar from './components/statusbar/StatusBar';
 import CommandPalette from './components/spotlight/CommandPalette';
-import { useThemeStore } from './stores/themeStore';
+import { useApplyTheme, useThemeStore } from './stores/themeStore';
 
 function App() {
-  const crtEnabled = useThemeStore((s) => s.crtEnabled);
-  const palette = useThemeStore((s) => s.palette());
-
+  useApplyTheme();
+  const phosphor = useThemeStore((s) => s.phosphorEnabled);
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
 
-  const commandExecutorRef = useRef<((cmd: string) => void) | null>(null);
-
-  const handleRegisterExecutor = useCallback((fn: (cmd: string) => void) => {
-    commandExecutorRef.current = fn;
+  // The terminal registers its runner so the status bar and palette can run commands.
+  const runnerRef = useRef<((cmd: string) => void) | null>(null);
+  const registerRunner = useCallback((run: (cmd: string) => void) => {
+    runnerRef.current = run;
   }, []);
-
-  const handleRunCommand = useCallback((cmd: string) => {
-    if (commandExecutorRef.current) {
-      commandExecutorRef.current(cmd);
-    }
-  }, []);
+  const runCommand = useCallback((cmd: string) => runnerRef.current?.(cmd), []);
 
   const openPalette = useCallback(() => setIsPaletteOpen(true), []);
   const closePalette = useCallback(() => setIsPaletteOpen(false), []);
 
-  // Global Ctrl+K / Cmd+K shortcut for Command Palette
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setIsPaletteOpen((prev) => !prev);
+        setIsPaletteOpen((open) => !open);
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   return (
-    <div className="relative flex flex-col h-screen w-screen overflow-hidden select-none bg-[#020308]">
-      {/* ─── Ambient Dynamic Moving Glow & Cyber Horizon Canvas ──────── */}
-      <CyberpunkBackground />
-
-      {/* ─── Translucent Frosted Glass Terminal Window Container ────── */}
-      <div
-        className="relative z-10 flex flex-col h-full w-full overflow-hidden"
-        style={{
-          backgroundColor: 'rgba(4, 6, 14, 0.54)',
-          WebkitBackdropFilter: 'blur(24px) saturate(170%)',
-          backdropFilter: 'blur(24px) saturate(170%)',
-          border: `1px solid ${palette.accent ? `${palette.accent}2e` : 'rgba(0, 240, 255, 0.22)'}`,
-          boxShadow: `0 0 50px ${palette.accent ? `${palette.accent}12` : 'rgba(0, 240, 255, 0.1)'}, inset 0 0 30px ${palette.accent ? `${palette.accent}06` : 'rgba(0, 240, 255, 0.03)'}`,
-        }}
-      >
-        {/* Top Waybar Header with Navigation Tabs & Search Trigger */}
-        <Waybar onRunCommand={handleRunCommand} onOpenPalette={openPalette} />
-
-        {/* Main Terminal Workspace */}
-        <div className="flex-1 flex overflow-hidden relative">
-          <Terminal
-            onExecuteCommandRef={handleRegisterExecutor}
-            onOpenPalette={openPalette}
-          />
-        </div>
-      </div>
-
-      {/* ─── First-Time Visitor Welcome Hub Overlay ─────────────────── */}
-      <WelcomeHub onRunCommand={handleRunCommand} />
-
-      {/* ─── Spotlight Command Palette (Ctrl+K / ⌘K) ───────────────── */}
-      <CommandPalette
-        isOpen={isPaletteOpen}
-        onClose={closePalette}
-        onRunCommand={handleRunCommand}
-      />
-
-      {/* Retro CRT Scanline Shader */}
-      {crtEnabled && <div className="crt-overlay" />}
+    <div className="blueprint-grid flex h-dvh flex-col text-chalk">
+      {/* On phones the page scrolls as a whole so the terminal keeps a usable height;
+          from md up, both windows fit the viewport and scroll on their own. */}
+      <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:flex-row md:overflow-hidden">
+        <IdentityPane />
+        <Terminal registerRunner={registerRunner} />
+      </main>
+      <StatusBar onRunCommand={runCommand} onOpenPalette={openPalette} />
+      <CommandPalette isOpen={isPaletteOpen} onClose={closePalette} onRunCommand={runCommand} />
+      {phosphor && <div className="phosphor-overlay" aria-hidden="true" />}
     </div>
   );
 }
 
 export default App;
-
